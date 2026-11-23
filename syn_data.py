@@ -35,18 +35,24 @@ def linear_to_srgb(x):
     return np.where(x <= 0.0031308, x * 12.92, 1.055 * np.power(x, 1 / 2.4) - 0.055)
 
 
-def global_jitter(img, rng, exposure=(0.7, 1.3), contrast=(0.8, 1.2), color=(0.9, 1.1)):
-    """Change overall exposure, contrast, and per-channel color balance.
-    Exposure is applied in linear light, the way a camera's exposure works;
-    contrast acts on the encoded values, like an editor's contrast slider.
+def global_jitter(img, rng, exposure=(0.7, 1.3), contrast=(0.8, 1.2), max_wb=0.1, max_tint=0.0):
+    """Change overall exposure, white balance and contrast.
+    Exposure and white balance are applied in linear light, the way a camera
+    applies them; contrast acts on the encoded values, like an editor's slider.
+    White balance moves along the blue-amber axis (+ warmer, - cooler), with an
+    optional green-magenta tint (off by default).
     img: BGR or grayscale uint8. Returns uint8."""
     lin = srgb_to_linear(img.astype(np.float32) / 255.0)
     lin *= rng.uniform(*exposure)                          # exposure
+    if lin.ndim == 3:
+        shift = rng.uniform(-max_wb, max_wb)               # + warmer, - cooler
+        tint = rng.uniform(-max_tint, max_tint) if max_tint > 0 else 0.0
+        lin[..., 0] *= 1.0 - shift                         # blue (OpenCV order is B, G, R)
+        lin[..., 2] *= 1.0 + shift                         # red
+        lin[..., 1] *= 1.0 + tint                          # green
     out = (linear_to_srgb(lin) * 255.0).astype(np.float32)
     mean = out.mean()
     out = (out - mean) * rng.uniform(*contrast) + mean     # contrast
-    if out.ndim == 3:
-        out *= rng.uniform(*color, size=out.shape[2])      # color / white balance
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
@@ -121,7 +127,7 @@ def augment(img, rng, args):
             out, rng,
             exposure=(args.min_exposure, args.max_exposure),
             contrast=(args.min_contrast, args.max_contrast),
-            color=(args.min_color, args.max_color),
+            max_wb=args.max_wb, max_tint=args.max_tint,
         )
     out = random_regional_brightness(
         out, rng,
@@ -153,8 +159,9 @@ def main():
     p.add_argument("--max-exposure", type=float, default=1.3)
     p.add_argument("--min-contrast", type=float, default=0.8)
     p.add_argument("--max-contrast", type=float, default=1.2)
-    p.add_argument("--min-color", type=float, default=0.9, help="per-channel color multiplier")
-    p.add_argument("--max-color", type=float, default=1.1)
+    p.add_argument("--max-wb", type=float, default=0.1,
+                   help="largest warm/cool white-balance shift (0.1 = red and blue gains of 0.9-1.1, in opposite directions)")
+    p.add_argument("--max-tint", type=float, default=0.0, help="largest green-magenta tint (0 = off)")
     args = p.parse_args()
 
     in_dir, out_dir = Path(args.input), Path(args.output)
