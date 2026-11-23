@@ -2,17 +2,30 @@
 Synthetic data generator for images.
 
 Each output image gets two kinds of variation:
-  1. Global jitter  - overall exposure, contrast, and color/white-balance shifts
+  1. Global jitter  - overall exposure and white balance (applied in linear light, as a
+     camera would) and contrast. White balance moves along the blue-amber axis
+     (--max-wb), with an optional green-magenta tint (--max-tint, off by default).
   2. Local brightness - random regions brightened/darkened
        mode "regions": random rectangles/ellipses with feathered (blurred) edges
        mode "blobs":   smooth brightness field from random Gaussian blobs (more natural)
+     Overlapping regions are capped at --min-factor/--max-factor.
+
+Outputs (in --output):
+  <name>_syn<i>.<ext>  one file per variant
+  params.csv           one row per variant with every value applied:
+                       file, source, variant, seed, exposure, contrast, wb_shift, tint,
+                       mode, regions, field_min, field_max
+
+With --seed, each image's variants depend only on the seed and that image's file name,
+so adding or removing other input files doesn't change them.
 
 Setup:
   pip install opencv-python numpy
 
 Usage:
-  python regional_brightness.py --input ./images --output ./synthetic --n 5 --mode blobs
-  python regional_brightness.py --input ./images --output ./synthetic --no-global   # local only
+  python syn_data.py --input ./images --output ./synthetic --n 5 --mode blobs --seed 0
+  python syn_data.py --input ./images --output ./synthetic --no-global   # local only
+  python syn_data.py --input ./images --output ./synthetic --max-wb 0.15 --max-tint 0.03
 """
 import argparse
 import csv
