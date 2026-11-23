@@ -97,7 +97,9 @@ def _blob_field(h, w, rng, n_regions, factor_range):
 
 def random_regional_brightness(img, rng, n_regions=(2, 5), factor_range=(0.5, 1.5),
                                mode="regions", feather=0.08):
-    """Brighten/darken random regions. img: BGR or grayscale uint8. Returns uint8."""
+    """Brighten/darken random regions. img: BGR or grayscale uint8. Returns uint8.
+    Overlapping regions multiply (or blobs add), so the combined field is held to
+    factor_range: no spot ends up darker or brighter than a single region allows."""
     h, w = img.shape[:2]
     n = int(rng.integers(n_regions[0], n_regions[1] + 1))
 
@@ -107,7 +109,7 @@ def random_regional_brightness(img, rng, n_regions=(2, 5), factor_range=(0.5, 1.
         field = _blob_field(h, w, rng, n, factor_range)
     else:
         raise ValueError(f"unknown mode: {mode}")
-    field = np.clip(field, 0.0, None)
+    field = np.clip(field, max(0.0, factor_range[0]), factor_range[1])
 
     if img.ndim == 2:  # grayscale
         return np.clip(img.astype(np.float32) * field, 0, 255).astype(np.uint8)
