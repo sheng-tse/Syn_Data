@@ -15,6 +15,7 @@ Usage:
   python regional_brightness.py --input ./images --output ./synthetic --no-global   # local only
 """
 import argparse
+import csv
 import hashlib
 from pathlib import Path
 
@@ -42,9 +43,11 @@ def global_jitter(img, rng, exposure=(0.7, 1.3), contrast=(0.8, 1.2), max_wb=0.1
     applies them; contrast acts on the encoded values, like an editor's slider.
     White balance moves along the blue-amber axis (+ warmer, - cooler), with an
     optional green-magenta tint (off by default).
-    img: BGR or grayscale uint8. Returns uint8."""
+    img: BGR or grayscale uint8. Returns (uint8 image, dict of the values applied)."""
     lin = srgb_to_linear(img.astype(np.float32) / 255.0)
-    lin *= rng.uniform(*exposure)                          # exposure
+    gain = rng.uniform(*exposure)
+    lin *= gain                                            # exposure
+    shift = tint = 0.0
     if lin.ndim == 3:
         shift = rng.uniform(-max_wb, max_wb)               # + warmer, - cooler
         tint = rng.uniform(-max_tint, max_tint) if max_tint > 0 else 0.0
@@ -53,8 +56,10 @@ def global_jitter(img, rng, exposure=(0.7, 1.3), contrast=(0.8, 1.2), max_wb=0.1
         lin[..., 1] *= 1.0 + tint                          # green
     out = (linear_to_srgb(lin) * 255.0).astype(np.float32)
     mean = out.mean()
-    out = (out - mean) * rng.uniform(*contrast) + mean     # contrast
-    return np.clip(out, 0, 255).astype(np.uint8)
+    c = rng.uniform(*contrast)
+    out = (out - mean) * c + mean                          # contrast
+    params = dict(exposure=gain, wb_shift=shift, tint=tint, contrast=c)
+    return np.clip(out, 0, 255).astype(np.uint8), params
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +102,8 @@ def _blob_field(h, w, rng, n_regions, factor_range):
 
 def random_regional_brightness(img, rng, n_regions=(2, 5), factor_range=(0.5, 1.5),
                                mode="regions", feather=0.08):
-    """Brighten/darken random regions. img: BGR or grayscale uint8. Returns uint8.
+    """Brighten/darken random regions. img: BGR or grayscale uint8.
+    Returns (uint8 image, dict describing the brightness field).
     Overlapping regions multiply (or blobs add), so the combined field is held to
     factor_range: no spot ends up darker or brighter than a single region allows."""
     h, w = img.shape[:2]
@@ -110,14 +116,15 @@ def random_regional_brightness(img, rng, n_regions=(2, 5), factor_range=(0.5, 1.
     else:
         raise ValueError(f"unknown mode: {mode}")
     field = np.clip(field, max(0.0, factor_range[0]), factor_range[1])
+    params = dict(mode=mode, regions=n, field_min=float(field.min()), field_max=float(field.max()))
 
     if img.ndim == 2:  # grayscale
-        return np.clip(img.astype(np.float32) * field, 0, 255).astype(np.uint8)
+        return np.clip(img.astype(np.float32) * field, 0, 255).astype(np.uint8), params
 
     # adjust only the V channel so the local change is a pure brightness change
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
     hsv[..., 2] = np.clip(hsv[..., 2] * field, 0, 255)
-    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR), params
 
 
 # ---------------------------------------------------------------------------
@@ -132,22 +139,28 @@ def image_seed(seed, name):
     return int.from_bytes(digest[:8], "big")
 
 
+PARAM_FIELDS = ["file", "source", "variant", "seed", "exposure", "contrast", "wb_shift", "tint",
+                "mode", "regions", "field_min", "field_max"]
+
+
 def augment(img, rng, args):
-    out = img
+    """Returns (augmented image, dict of every value applied; global values are
+    blank when --no-global is set)."""
+    out, params = img, dict(exposure=None, contrast=None, wb_shift=None, tint=None)
     if not args.no_global:
-        out = global_jitter(
+        out, params = global_jitter(
             out, rng,
             exposure=(args.min_exposure, args.max_exposure),
             contrast=(args.min_contrast, args.max_contrast),
             max_wb=args.max_wb, max_tint=args.max_tint,
         )
-    out = random_regional_brightness(
+    out, local = random_regional_brightness(
         out, rng,
         n_regions=(args.min_regions, args.max_regions),
         factor_range=(args.min_factor, args.max_factor),
         mode=args.mode, feather=args.feather,
     )
-    return out
+    return out, {**params, **local}
 
 
 def main():
@@ -186,27 +199,36 @@ def main():
     if not files:
         raise SystemExit(f"no images found in {in_dir}")
 
-    for path in files:
-        img = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-        if img is None:
-            print(f"skip (unreadable): {path.name}")
-            continue
-        if img.dtype != np.uint8:  # e.g. 16-bit PNG/TIFF
-            img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    params_path = out_dir / "params.csv"
+    with open(params_path, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=PARAM_FIELDS)
+        writer.writeheader()
+        for path in files:
+            img = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            if img is None:
+                print(f"skip (unreadable): {path.name}")
+                continue
+            if img.dtype != np.uint8:  # e.g. 16-bit PNG/TIFF
+                img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
-        alpha = None
-        if img.ndim == 3 and img.shape[2] == 4:  # keep alpha channel untouched
-            img, alpha = img[..., :3], img[..., 3]
+            alpha = None
+            if img.ndim == 3 and img.shape[2] == 4:  # keep alpha channel untouched
+                img, alpha = img[..., :3], img[..., 3]
 
-        rng = np.random.default_rng(image_seed(args.seed, path.name))
-        for i in range(args.n):
-            aug = augment(img, rng, args)
-            if alpha is not None:
-                aug = np.dstack([aug, alpha])
-            cv2.imwrite(str(out_dir / f"{path.stem}_syn{i}{path.suffix}"), aug)
-        print(f"done: {path.name} -> {args.n} variants")
+            seed = image_seed(args.seed, path.name)
+            rng = np.random.default_rng(seed)
+            for i in range(args.n):
+                aug, params = augment(img, rng, args)
+                if alpha is not None:
+                    aug = np.dstack([aug, alpha])
+                name = f"{path.stem}_syn{i}{path.suffix}"
+                cv2.imwrite(str(out_dir / name), aug)
+                row = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in params.items()}
+                writer.writerow(dict(row, file=name, source=path.name, variant=i, seed="" if seed is None else seed))
+            print(f"done: {path.name} -> {args.n} variants")
 
     print(f"finished: {len(files) * args.n} images written to {out_dir}")
+    print(f"parameters: {params_path}")
 
 
 if __name__ == "__main__":
