@@ -15,6 +15,7 @@ Usage:
   python regional_brightness.py --input ./images --output ./synthetic --no-global   # local only
 """
 import argparse
+import hashlib
 from pathlib import Path
 
 import cv2
@@ -120,6 +121,15 @@ def random_regional_brightness(img, rng, n_regions=(2, 5), factor_range=(0.5, 1.
 # ---------------------------------------------------------------------------
 # Full pipeline
 # ---------------------------------------------------------------------------
+def image_seed(seed, name):
+    """Per-image seed derived from the run seed and the file name, so an image's
+    variants don't depend on which other files are in the folder. None = random."""
+    if seed is None:
+        return None
+    digest = hashlib.sha256(f"{seed}:{name}".encode()).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
 def augment(img, rng, args):
     out = img
     if not args.no_global:
@@ -169,7 +179,6 @@ def main():
         raise SystemExit(f"input folder not found: {in_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    rng = np.random.default_rng(args.seed)
     exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
     files = [f for f in sorted(in_dir.iterdir()) if f.suffix.lower() in exts]
     if not files:
@@ -187,6 +196,7 @@ def main():
         if img.ndim == 3 and img.shape[2] == 4:  # keep alpha channel untouched
             img, alpha = img[..., :3], img[..., 3]
 
+        rng = np.random.default_rng(image_seed(args.seed, path.name))
         for i in range(args.n):
             aug = augment(img, rng, args)
             if alpha is not None:
