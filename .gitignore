@@ -1,0 +1,12 @@
+# Patient photos and archives stay local: this repository is public
+Data/
+*.zip
+
+# Generator working folders (see flatten_cases.py / split_cases.py usage)
+flat/
+synthetic/
+Synthetic Bleaching/
+
+# OS and Python clutter
+.DS_Store
+__pycache__/
