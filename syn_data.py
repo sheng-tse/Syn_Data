@@ -24,11 +24,25 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Global variation
 # ---------------------------------------------------------------------------
+def srgb_to_linear(x):
+    """sRGB-encoded values in [0, 1] -> linear light."""
+    return np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(x):
+    """Linear light -> sRGB-encoded values in [0, 1]."""
+    x = np.clip(x, 0.0, 1.0)
+    return np.where(x <= 0.0031308, x * 12.92, 1.055 * np.power(x, 1 / 2.4) - 0.055)
+
+
 def global_jitter(img, rng, exposure=(0.7, 1.3), contrast=(0.8, 1.2), color=(0.9, 1.1)):
     """Change overall exposure, contrast, and per-channel color balance.
+    Exposure is applied in linear light, the way a camera's exposure works;
+    contrast acts on the encoded values, like an editor's contrast slider.
     img: BGR or grayscale uint8. Returns uint8."""
-    out = img.astype(np.float32)
-    out *= rng.uniform(*exposure)                          # exposure
+    lin = srgb_to_linear(img.astype(np.float32) / 255.0)
+    lin *= rng.uniform(*exposure)                          # exposure
+    out = (linear_to_srgb(lin) * 255.0).astype(np.float32)
     mean = out.mean()
     out = (out - mean) * rng.uniform(*contrast) + mean     # contrast
     if out.ndim == 3:
